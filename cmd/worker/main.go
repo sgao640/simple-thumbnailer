@@ -46,12 +46,45 @@ type config struct {
 }
 
 func loadSimpleContentConfig() (*simpleconfig.ServerConfig, error) {
-	cfg, err := simpleconfig.Load(simpleconfig.WithEnv(""))
-	if err != nil {
-		return nil, fmt.Errorf("unable to load simplecontent config: %w", err)
+	opts := []simpleconfig.Option{
+		simpleconfig.WithDatabase(getenv("DATABASE_TYPE", "postgres"), getenv("DATABASE_URL", "")),
+		simpleconfig.WithDatabaseSchema(getenv("DATABASE_SCHEMA", "content")),
+		simpleconfig.WithDefaultStorage(getenv("DEFAULT_STORAGE_BACKEND", "s3")),
 	}
 
-	return cfg, nil
+	// Configure storage backend
+	switch getenv("DEFAULT_STORAGE_BACKEND", "s3") {
+	case "s3":
+		opts = append(opts, simpleconfig.WithS3StorageFull(
+			"s3",
+			getenv("AWS_S3_BUCKET", "xchangeai-content"),
+			getenv("AWS_S3_REGION", "us-east-1"),
+			getenv("AWS_ACCESS_KEY_ID", ""),
+			getenv("AWS_SECRET_ACCESS_KEY", ""),
+			getenv("AWS_S3_ENDPOINT", ""),
+			getenvBool("AWS_S3_USE_SSL", false),
+			getenvBool("AWS_S3_USE_PATH_STYLE", true),
+		))
+	case "memory":
+		opts = append(opts, simpleconfig.WithMemoryStorage("memory"))
+	}
+
+	// Service options
+	opts = append(opts,
+		simpleconfig.WithEventLogging(false),
+		simpleconfig.WithPreviews(true),
+		simpleconfig.WithStorageDelegatedURLs(),
+	)
+
+	return simpleconfig.Load(opts...)
+}
+
+func getenvBool(key string, defaultValue bool) bool {
+	val := getenv(key, "")
+	if val == "" {
+		return defaultValue
+	}
+	return val == "true"
 }
 
 func main() {
@@ -278,7 +311,16 @@ func handleJob(ctx context.Context, job contracts.Job, cfg config, contentSvc si
 		}
 	}
 
-	thumbnails, err := img.GenerateThumbnails(source.Path, basePath, specs)
+	// Get MIME type and select appropriate generator
+	generator, err := img.GetGenerator(source.MimeType)
+	if err != nil {
+		contentLogger.Warn("unsupported file type, falling back to image generator", "mime_type", source.MimeType, "err", err)
+		// Fallback to image generator for backward compatibility
+		generator = &img.ImageGenerator{}
+	}
+	contentLogger.Info("using generator", "generator", generator.Name(), "mime_type", source.MimeType)
+
+	thumbnails, err := generator.Generate(ctx, source.Path, basePath, specs)
 	if err != nil {
 		contentLogger.Error("thumbnail generation failed", "err", err)
 		failureType := classifyError(err)
@@ -286,7 +328,7 @@ func handleJob(ctx context.Context, job contracts.Job, cfg config, contentSvc si
 		publishEventsStep(nc, cfg.ResultSubject, state, nil, sourcePath, err, failureType)
 		return fmt.Errorf("generate thumbnails: %w", err)
 	}
-	contentLogger.Info("thumbnails generated", "count", len(thumbnails))
+	contentLogger.Info("thumbnails generated", "count", len(thumbnails), "generator", generator.Name())
 
 	// Step 8: Upload results
 	state.AddLifecycleEvent(schema.StageUpload, nil, "")
@@ -464,13 +506,13 @@ func parseThumbnailSizesHint(hints map[string]string, availableSizes []SizeConfi
 }
 
 type ProcessingState struct {
-	JobID              string
-	ParentContentID    string
-	ParentStatus       string
-	ThumbnailSizes     []string
-	DerivedContentIDs  map[string]uuid.UUID // size name -> derived content ID
-	StartTime          time.Time
-	Lifecycle          []schema.ThumbnailLifecycleEvent
+	JobID             string
+	ParentContentID   string
+	ParentStatus      string
+	ThumbnailSizes    []string
+	DerivedContentIDs map[string]uuid.UUID // size name -> derived content ID
+	StartTime         time.Time
+	Lifecycle         []schema.ThumbnailLifecycleEvent
 }
 
 func (ps *ProcessingState) AddLifecycleEvent(stage schema.ProcessingStage, err error, failureType schema.FailureType) {
@@ -562,11 +604,12 @@ func (e ValidationError) Error() string {
 
 func validateParentContentStep(ctx context.Context, parent *simplecontent.Content, contentSvc simplecontent.Service, logger *slog.Logger) error {
 	// Check parent content status
-	if parent.Status != string(simplecontent.ContentStatusUploaded) {
-		logger.Warn("parent content not ready for derivation", "status", parent.Status, "required", "uploaded")
+	requiredStatus := simplecontent.ContentStatusUploaded
+	if parent.Status != string(requiredStatus) {
+		logger.Warn("parent content not ready for derivation", "status", parent.Status, "required", requiredStatus)
 		return ValidationError{
 			Type:    schema.FailureTypeValidation,
-			Message: fmt.Sprintf("parent content status is '%s', expected 'uploaded'", parent.Status),
+			Message: fmt.Sprintf("parent content status is '%s', expected '%s'", parent.Status, requiredStatus),
 		}
 	}
 
@@ -605,9 +648,26 @@ func uploadResultsStep(ctx context.Context, parent *simplecontent.Content, thumb
 		}
 
 		// Upload object for the existing derived content
+		// IMPORTANT: MimeType must be empty to allow auto-detection from the actual thumbnail file
+		//
+		// Context:
+		// - source.MimeType represents the ORIGINAL file's MIME type (e.g., video/mp4, application/pdf)
+		// - thumb.Path is the GENERATED thumbnail file (always JPEG for videos, PNG for PDFs)
+		// - Using source.MimeType would create incorrect metadata in storage
+		//
+		// Examples of what would happen if we used source.MimeType:
+		// - Video (sample.mp4) → Thumbnail (sample_small.jpg) would be labeled as "video/mp4" ❌
+		// - PDF (document.pdf) → Thumbnail (document_small.png) would be labeled as "application/pdf" ❌
+		// - Image (photo.jpg) → Thumbnail (photo_small.jpg) would be labeled as "image/jpeg" ✅ (coincidentally correct)
+		//
+		// By setting MimeType to empty string:
+		// - UploadThumbnailObject calls detectMime() which reads the actual file
+		// - Video thumbnails correctly detected as "image/jpeg" ✅
+		// - PDF thumbnails correctly detected as "image/png" ✅
+		// - Image thumbnails still correctly detected as their actual format ✅
 		_, err := uploader.UploadThumbnailObject(ctx, derivedContentID, thumb.Path, upload.UploadOptions{
 			FileName: source.Filename,
-			MimeType: source.MimeType,
+			MimeType: "", // Empty = auto-detect from thumbnail file (see comment above)
 			Width:    thumb.Width,
 			Height:   thumb.Height,
 		})
@@ -619,10 +679,10 @@ func uploadResultsStep(ctx context.Context, parent *simplecontent.Content, thumb
 
 			// Add failed result
 			results = append(results, schema.ThumbnailResult{
-				Size:    thumb.Name,
-				Width:   thumb.Width,
-				Height:  thumb.Height,
-				Status:  "failed",
+				Size:   thumb.Name,
+				Width:  thumb.Width,
+				Height: thumb.Height,
+				Status: "failed",
 				DerivationParams: &schema.DerivationParams{
 					SourceWidth:    thumb.SourceWidth,
 					SourceHeight:   thumb.SourceHeight,
@@ -641,10 +701,10 @@ func uploadResultsStep(ctx context.Context, parent *simplecontent.Content, thumb
 			logger.Error("update content status to processed failed", "size", thumb.Name, "content_id", derivedContentID, "err", err)
 			// Continue with failed status but log the error
 			results = append(results, schema.ThumbnailResult{
-				Size:    thumb.Name,
-				Width:   thumb.Width,
-				Height:  thumb.Height,
-				Status:  "failed",
+				Size:   thumb.Name,
+				Width:  thumb.Width,
+				Height: thumb.Height,
+				Status: "failed",
 				DerivationParams: &schema.DerivationParams{
 					SourceWidth:    thumb.SourceWidth,
 					SourceHeight:   thumb.SourceHeight,
@@ -679,7 +739,9 @@ func uploadResultsStep(ctx context.Context, parent *simplecontent.Content, thumb
 		})
 
 		logger.Info("thumbnail uploaded successfully", "size", thumb.Name, "content_id", derivedContentID, "processing_time_ms", processingTime)
-		os.Remove(thumb.Path)
+		if err := os.Remove(thumb.Path); err != nil {
+			logger.Warn("failed to cleanup thumbnail file", "path", thumb.Path, "err", err)
+		}
 	}
 
 	return results, nil

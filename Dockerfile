@@ -19,6 +19,17 @@ RUN CGO_ENABLED=0 GOOS=linux go build -tags nats -trimpath -o /out/worker2 ./cmd
 FROM alpine:3.20 AS runtime
 WORKDIR /app
 
+# Install conversion tools for multi-format thumbnail support
+# - ffmpeg: Video thumbnail generation (~100MB)
+# - poppler-utils: PDF thumbnail generation (~20MB)
+# - font-noto: Better text rendering in PDFs (~10MB)
+RUN apk add --no-cache \
+    ffmpeg \
+    poppler-utils \
+    font-noto \
+    && rm -rf /var/cache/apk/*
+
+# Create non-root user and directories
 RUN adduser -D -h /app nonroot
 RUN mkdir -p /app/data/thumbs && chown -R nonroot:nonroot /app
 

@@ -1,3 +1,11 @@
+## Ignore all files without extension
+# Ignore all
+*
+# Unignore all with extensions
+!*.*
+# Unignore all dirs
+!*/
+
 .gocache/
 .cache/
 
@@ -7,3 +15,6 @@
 
 worker
 backfill
+
+.vscode
+.idea
