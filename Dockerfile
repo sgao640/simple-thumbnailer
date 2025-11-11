@@ -12,8 +12,9 @@ RUN go mod download
 # Copy the remaining source
 COPY . .
 
-# Build the worker binary with the nats build tag
+# Build all worker binaries with the nats build tag
 RUN CGO_ENABLED=0 GOOS=linux go build -tags nats -trimpath -o /out/worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -tags nats -trimpath -o /out/worker2 ./cmd/worker2
 
 FROM alpine:3.20 AS runtime
 WORKDIR /app
@@ -23,8 +24,6 @@ RUN mkdir -p /app/data/thumbs && chown -R nonroot:nonroot /app
 
 ENV THUMB_DIR=/app/data/thumbs
 
+# Copy all built binaries
 COPY --from=build /out/worker /app/worker
-
-USER nonroot
-
-ENTRYPOINT ["/app/worker"]
+COPY --from=build /out/worker2 /app/worker2
