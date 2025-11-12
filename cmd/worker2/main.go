@@ -595,29 +595,9 @@ func fatal(logger *slog.Logger, msg string, err error, attrs ...any) {
 	os.Exit(1)
 }
 
-// mapEnvVarsForSimpleContent maps AWS_* and CONTENT_PG_* environment variables
-// to the format expected by simple-content's config loader (S3_* and DATABASE_*)
+// mapEnvVarsForSimpleContent maps CONTENT_PG_* environment variables
+// to the format expected by simple-content's config loader (DATABASE_*)
 func mapEnvVarsForSimpleContent(cfg Config) {
-	// Map AWS S3 variables to S3_* format
-	if cfg.S3Config.Bucket != "" {
-		os.Setenv("S3_BUCKET", cfg.S3Config.Bucket)
-	}
-	if cfg.S3Config.Region != "" {
-		os.Setenv("S3_REGION", cfg.S3Config.Region)
-	}
-	if cfg.S3Config.AccessKeyID != "" {
-		os.Setenv("S3_ACCESS_KEY_ID", cfg.S3Config.AccessKeyID)
-	}
-	if cfg.S3Config.SecretAccessKey != "" {
-		os.Setenv("S3_SECRET_ACCESS_KEY", cfg.S3Config.SecretAccessKey)
-	}
-	if cfg.S3Config.Endpoint != "" {
-		os.Setenv("S3_ENDPOINT", cfg.S3Config.Endpoint)
-	}
-	if cfg.S3Config.PresignDuration > 0 {
-		os.Setenv("S3_PRESIGN_DURATION", strconv.Itoa(cfg.S3Config.PresignDuration))
-	}
-
 	// Map CONTENT_PG_* variables to DATABASE_* format
 	if !cfg.UseInMemory && cfg.ContentDbConfig.Host != "" {
 		// Construct DATABASE_URL from CONTENT_PG_* variables
