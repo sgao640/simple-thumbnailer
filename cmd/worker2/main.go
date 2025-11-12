@@ -67,12 +67,13 @@ type WorkerConfig struct {
 }
 
 type Config struct {
-	ContentDbConfig ContentDbConfig
-	S3Config        S3Config
-	WorkerConfig    WorkerConfig
-	UseInMemory     bool   `env:"USE_IN_MEMORY" env-default:"false"`
-	StorageBackend  string `env:"STORAGE_BACKEND" env-default:"s3"`
-	URLStrategy     string `env:"URL_STRATEGY" env-default:"storage-delegated"`
+	ContentDbConfig    ContentDbConfig
+	S3Config           S3Config
+	WorkerConfig       WorkerConfig
+	UseInMemory        bool   `env:"USE_IN_MEMORY" env-default:"false"`
+	StorageBackend     string `env:"STORAGE_BACKEND" env-default:"s3"`
+	URLStrategy        string `env:"URL_STRATEGY" env-default:"storage-delegated"`
+	StorageBackendName string `env:"STORAGE_BACKEND_NAME" env-default:"s3"`
 }
 
 type SizeConfig struct {
@@ -613,6 +614,13 @@ func mapEnvVarsForSimpleContent(cfg Config) {
 		os.Setenv("DATABASE_SCHEMA", "content")
 	}
 
+	// Map storage backend to STORAGE_URL format expected by simple-content
+	if cfg.StorageBackend == "s3" && cfg.S3Config.Bucket != "" {
+		os.Setenv("STORAGE_URL", fmt.Sprintf("s3://%s", cfg.S3Config.Bucket))
+	} else if cfg.UseInMemory || cfg.StorageBackend == "memory" {
+		os.Setenv("STORAGE_URL", "memory://")
+	}
+
 	// Map other config variables
 	if cfg.StorageBackend != "" {
 		os.Setenv("DEFAULT_STORAGE_BACKEND", cfg.StorageBackend)
@@ -655,6 +663,24 @@ func main() {
 		fatal(logger, "load simplecontent config", err)
 	}
 	contentCfg.URLStrategy = cfg.URLStrategy
+
+	// Apply advanced S3 configuration (endpoint, path-style, SSL) for MinIO support
+	if cfg.StorageBackend == "s3" && cfg.S3Config.Endpoint != "" {
+		for i := range contentCfg.StorageBackends {
+			if contentCfg.StorageBackends[i].Type == "s3" {
+				contentCfg.StorageBackends[i].Config["endpoint"] = cfg.S3Config.Endpoint
+				// Determine SSL from endpoint URL
+				useSSL := len(cfg.S3Config.Endpoint) > 8 && cfg.S3Config.Endpoint[:8] == "https://"
+				contentCfg.StorageBackends[i].Config["use_ssl"] = useSSL
+				// MinIO requires path-style addressing
+				contentCfg.StorageBackends[i].Config["use_path_style"] = true
+				if cfg.S3Config.PresignDuration > 0 {
+					contentCfg.StorageBackends[i].Config["presign_duration"] = cfg.S3Config.PresignDuration
+				}
+				logger.Info("applied MinIO S3 config", "endpoint", cfg.S3Config.Endpoint, "use_ssl", useSSL)
+			}
+		}
+	}
 
 	backendSummaries := make([]string, 0, len(contentCfg.StorageBackends))
 	for _, b := range contentCfg.StorageBackends {
