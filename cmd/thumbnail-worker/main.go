@@ -74,6 +74,7 @@ type Config struct {
 	StorageBackend     string `env:"STORAGE_BACKEND" env-default:"s3"`
 	URLStrategy        string `env:"URL_STRATEGY" env-default:"storage-delegated"`
 	StorageBackendName string `env:"STORAGE_BACKEND_NAME" env-default:"s3"`
+	Environment        string `env:"ENVIRONMENT" env-default:"prod"`
 }
 
 type SizeConfig struct {
@@ -665,7 +666,7 @@ func main() {
 	contentCfg.URLStrategy = cfg.URLStrategy
 
 	// Apply advanced S3 configuration (endpoint, path-style, SSL) for MinIO support
-	if cfg.StorageBackend == "s3" && cfg.S3Config.Endpoint != "" {
+	if cfg.Environment == "dev" && cfg.StorageBackend == "s3" && cfg.S3Config.Endpoint != "" {
 		for i := range contentCfg.StorageBackends {
 			if contentCfg.StorageBackends[i].Type == "s3" {
 				contentCfg.StorageBackends[i].Config["endpoint"] = cfg.S3Config.Endpoint
