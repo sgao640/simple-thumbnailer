@@ -14,7 +14,7 @@ COPY . .
 
 # Build all worker binaries with the nats build tag
 RUN CGO_ENABLED=0 GOOS=linux go build -tags nats -trimpath -o /out/worker ./cmd/worker
-RUN CGO_ENABLED=0 GOOS=linux go build -tags nats -trimpath -o /out/worker2 ./cmd/worker2
+RUN CGO_ENABLED=0 GOOS=linux go build -tags nats -trimpath -o /out/thumbnail-worker ./cmd/thumbnail-worker
 
 FROM alpine:3.20 AS runtime
 WORKDIR /app
@@ -37,4 +37,4 @@ ENV THUMB_DIR=/app/data/thumbs
 
 # Copy all built binaries
 COPY --from=build /out/worker /app/worker
-COPY --from=build /out/worker2 /app/worker2
+COPY --from=build /out/thumbnail-worker /app/thumbnail-worker
